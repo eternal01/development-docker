@@ -2,7 +2,7 @@ COMPOSE ?= docker compose
 
 .PHONY: help init build-workspace build-workspace-multiarch config up shell down ps logs \
         db cache mq storage registry observability ci gateway docs \
-        go-env rust-env php-env full-env dev check lock
+        go-env rust-env php-env full-env dev gitlab-env check lock verify-lock doctor test
 
 # Service names that can be passed positionally to the preset targets
 # (e.g., `make rust-env mysql redis`). Listing them here prevents Make from
@@ -74,8 +74,11 @@ registry: ## Start registry/coordination services (etcd, DTM)
 observability: ## Start observability stack (ELK, Grafana, Prometheus, Jaeger)
 	COMPOSE_PROFILES=observability $(COMPOSE) up -d
 
-ci: ## Start CI/management services (GitLab, Portainer) - requires Postgres + Redis
-	COMPOSE_PROFILES=ci,db,cache $(COMPOSE) up -d
+gitlab-env: ## Start GitLab with only its Postgres and Redis dependencies
+	COMPOSE_PROFILES=gitlab,postgres,redis $(COMPOSE) up -d postgres redis gitlab
+
+ci: ## Start GitLab, Runner and Portainer with only their Postgres/Redis dependencies
+	COMPOSE_PROFILES=ci,postgres,redis $(COMPOSE) up -d postgres redis gitlab gitlab-runner portainer
 
 gateway: ## Start gateway (Traefik) - dashboard only, services on host ports
 	COMPOSE_PROFILES=gateway $(COMPOSE) up -d
@@ -135,5 +138,16 @@ dev: ## Ad-hoc services: make dev svc1 [svc2 ...] (no preset default)
 check: ## Pre-flight check: verify all images reachable on configured mirrors
 	@./scripts/check-versions.sh
 
-lock: ## Lock current running image versions to .env.lock for reproducibility
+lock: ## Snapshot current Compose image references and build inputs to .env.lock
 	@bash scripts/lock-versions.sh
+
+verify-lock: ## Verify current Compose inputs match .env.lock
+	@./scripts/check-lock.sh
+
+doctor: ## Check workspace host configuration and container runtime
+	@./scripts/dev doctor
+
+test: ## Run workspace shell and configuration regression tests
+	@bash scripts/test-workspace.sh
+	@find scripts workspaces -type f \( -name '*.sh' -o -path 'scripts/dev' \) -print0 | xargs -0 -n 1 bash -n
+	@zsh -n workspaces/dotfiles/.zshrc

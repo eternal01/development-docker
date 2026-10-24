@@ -22,7 +22,7 @@ services:
       - ${DATA_PATH_HOST}/mysql:/var/lib/mysql
       - ${MYSQL_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
     ports:
-      - "${MYSQL_PORT}:3306"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${MYSQL_PORT}:3306"
     networks:
       - frontend
       - backend
@@ -43,7 +43,7 @@ services:
       args:
         - MONGO_VERSION=${MONGO_VERSION}
     ports:
-      - "${MONGODB_PORT}:27017"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${MONGODB_PORT}:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
@@ -73,7 +73,7 @@ services:
       - ${DATA_PATH_HOST}/postgres:/var/lib/postgresql/data
       - ${POSTGRES_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${POSTGRES_PORT}:5432"
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
@@ -100,7 +100,7 @@ services:
     volumes:
       - ${DATA_PATH_HOST}/postgres:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${POSTGRES_PORT}:5432"
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}

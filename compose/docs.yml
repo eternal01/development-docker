@@ -9,7 +9,7 @@ services:
     profiles: ["docs", "swagger-editor"]
     image: swaggerapi/swagger-editor:${SWAGGER_EDITOR_VERSION}
     ports:
-      - ${SWAGGER_EDITOR_PORT}:8080
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${SWAGGER_EDITOR_PORT}:8080"
     networks:
       - frontend
       - backend
@@ -33,7 +33,7 @@ services:
     environment:
       - API_URL=${SWAGGER_API_URL}
     ports:
-      - ${SWAGGER_UI_PORT}:8080
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${SWAGGER_UI_PORT}:8080"
     networks:
       - frontend
       - backend

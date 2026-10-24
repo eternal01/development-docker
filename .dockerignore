@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+.env.lock
+.idea
+.claude
+.DS_Store
+logs
+data
+**/node_modules
+**/vendor
+**/target
+**/.venv
+**/__pycache__

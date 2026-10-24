@@ -34,7 +34,7 @@ if ! cd "$target" 2>/dev/null; then
 fi
 
 # Already configured — leave the project owner's config alone.
-if [ -f .mise.toml ] || [ -f .tool-versions ]; then
+if [ -f .mise.toml ] || [ -f mise.toml ] || [ -f .tool-versions ]; then
   exit 0
 fi
 
@@ -49,6 +49,15 @@ detect_project_stack
 
 [ "${#detected_tools[@]}" -eq 0 ] && exit 0
 
+safe_version_count=0
+for version in "${detected_versions[@]}"; do
+  [ -n "${version}" ] && safe_version_count=$((safe_version_count + 1))
+done
+if [ "${safe_version_count}" -eq 0 ]; then
+  echo "[detect-stack] no safe runtime versions inferred; choose versions explicitly with mise use" >&2
+  exit 0
+fi
+
 # --- emit -------------------------------------------------------------------
 out=".mise.toml"
 {
@@ -58,6 +67,7 @@ out=".mise.toml"
   printf '# in the workspace shell or delete this file.\n'
   printf '[tools]\n'
   for i in "${!detected_tools[@]}"; do
+    [ -n "${detected_versions[$i]}" ] || continue
     printf '%s = "%s"\n' "${detected_tools[$i]}" "${detected_versions[$i]}"
   done
 } > "$out"

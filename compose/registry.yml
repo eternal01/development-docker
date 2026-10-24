@@ -16,8 +16,10 @@ services:
       - TZ=${TZ}
       - ALLOW_NONE_AUTHENTICATION=yes
       - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+    volumes:
+      - etcd:/bitnami/etcd
     ports:
-      - "${ETCD_PORT}:2379"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${ETCD_PORT}:2379"
     networks:
       - frontend
       - backend
@@ -45,7 +47,7 @@ services:
     environment:
       - TZ=${TZ}
     ports:
-      - "${ETCD_MANAGER_PORT}:8080"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${ETCD_MANAGER_PORT}:8080"
     depends_on:
       - etcd
     networks:
@@ -78,8 +80,8 @@ services:
     volumes:
       - ./dtm/config.yml:/app/dtm/configs/config.yaml
     ports:
-      - "${DTM_HTTP_PORT}:36789"
-      - "${DTM_GRPC_PORT}:36790"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${DTM_HTTP_PORT}:36789"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${DTM_GRPC_PORT}:36790"
     networks:
       - frontend
       - backend

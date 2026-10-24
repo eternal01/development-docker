@@ -6,7 +6,14 @@ if [ "$(id -u)" -eq 0 ] && [ "${WORKSPACE_SSH_ENABLED:-true}" = "true" ] && [ -x
     # image layer is gone on every container start. Recreate it before launch,
     # and gate on sshd binary presence (the old check, `[ -d /run/sshd ]`,
     # was the root cause of "sshd down after every restart").
-    mkdir -p /run/sshd
+    mkdir -p /run/sshd /etc/ssh/host_keys
+    for key_type in ed25519 ecdsa rsa; do
+        key_file="/etc/ssh/host_keys/ssh_host_${key_type}_key"
+        if [ ! -f "${key_file}" ]; then
+            ssh-keygen -q -t "${key_type}" -f "${key_file}" -N ""
+        fi
+        ln -sf "${key_file}" "/etc/ssh/ssh_host_${key_type}_key"
+    done
 
     mkdir -p "${WORKSPACE_HOME}/.ssh"
     chown -R "${WORKSPACE_USER}:${WORKSPACE_USER}" "${WORKSPACE_HOME}/.ssh"
@@ -17,26 +24,39 @@ if [ "$(id -u)" -eq 0 ] && [ "${WORKSPACE_SSH_ENABLED:-true}" = "true" ] && [ -x
         chmod 600 "${WORKSPACE_HOME}/.ssh/authorized_keys"
     fi
 
-    # -E routes sshd logs to a file so a start failure is debuggable without
-    # exec'ing into the container. sshd is daemonized, so it's a child of
-    # entrypoint, not PID 1 — fine for the failure mode we're fixing
-    # ("never starts") but does not cover "crashes later".
-    /usr/sbin/sshd -E /var/log/sshd.log || echo "[workspace-entrypoint] sshd failed to start (see /var/log/sshd.log)"
+    # Host keys are generated at runtime and persisted separately from the image.
+    /usr/sbin/sshd -E /proc/1/fd/2
 elif [ "${WORKSPACE_SSH_ENABLED:-true}" = "true" ] && [ "$(id -u)" -ne 0 ] && [ -x /usr/sbin/sshd ]; then
     echo "[workspace-entrypoint] SSHD is enabled but the container is not running as root; set WORKSPACE_CONTAINER_USER=root" >&2
 fi
 
-if [ "$(id -u)" -eq 0 ] && [ -d "${WORKSPACE_HOME}/.cache/mise" ]; then
-    chown -R "${WORKSPACE_USER}:${WORKSPACE_USER}" "${WORKSPACE_HOME}/.cache"
-fi
-
-if [ "$(id -u)" -eq 0 ] && [ -d "${WORKSPACE_HOME}/.config/mise" ]; then
-    chown -R "${WORKSPACE_USER}:${WORKSPACE_USER}" "${WORKSPACE_HOME}/.config"
+if [ "$(id -u)" -eq 0 ]; then
+    for volume_dir in \
+        "${WORKSPACE_HOME}/.cache/mise" \
+        "${WORKSPACE_HOME}/.config/mise" \
+        "${WORKSPACE_HOME}/.config/gh" \
+        "${WORKSPACE_HOME}/.local/state/shell" \
+        "${WORKSPACE_HOME}/go/pkg/mod" \
+        "${WORKSPACE_HOME}/.cargo/registry" \
+        "${WORKSPACE_HOME}/.cargo/git" \
+        "${WORKSPACE_HOME}/.composer" \
+        "/home/linuxbrew/.cache/Homebrew"; do
+        if [ -d "${volume_dir}" ]; then
+            marker="${volume_dir}/.workspace-owner-fixed-$(id -u "${WORKSPACE_USER}")"
+            if [ ! -e "${marker}" ]; then
+                chown -R "${WORKSPACE_USER}:${WORKSPACE_USER}" "${volume_dir}"
+                : > "${marker}"
+                chown "${WORKSPACE_USER}:${WORKSPACE_USER}" "${marker}"
+            fi
+        fi
+    done
 fi
 
 # Inform the user when a project has a mise configuration. Installation is
 # explicit so entering a directory never downloads a toolchain unexpectedly.
-if [ -f "${WORKSPACE_HOME}/.tool-versions" ] || [ -f "${WORKSPACE_HOME}/.mise.toml" ] || [ -f "/workspace/mise.toml" ]; then
+if [ -f "${WORKSPACE_HOME}/.tool-versions" ] || [ -f "${WORKSPACE_HOME}/.mise.toml" ] || \
+   [ -f "${WORKSPACE_PATH}/.mise.toml" ] || [ -f "${WORKSPACE_PATH}/mise.toml" ] || \
+   [ -f "${WORKSPACE_PATH}/.tool-versions" ]; then
     echo "[workspace-entrypoint] mise configuration detected. Consider running 'mise install' inside the container."
 fi
 

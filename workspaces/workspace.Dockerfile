@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 #--------------------------------------------------------------------------
 # Development Workspace
 #--------------------------------------------------------------------------
@@ -33,7 +34,7 @@ ARG TARGETARCH
 ARG WORKSPACE_INSTALL_DNSUTILS=false
 ARG WORKSPACE_INSTALL_WORKSPACE_SSH=false
 ARG WORKSPACE_INSTALL_BREW=true
-ARG WORKSPACE_BREW_PACKAGES="jq yq ripgrep fzf tree tmux fd neovim"
+ARG WORKSPACE_BREW_PACKAGES="gh jq yq ripgrep fzf tree tmux fd neovim starship"
 
 # mise pre-installed languages at build time (e.g. "go@1.22.4 rust@stable php@8.3.6")
 ARG WORKSPACE_PREINSTALL_LANGUAGES=""
@@ -41,12 +42,9 @@ ARG WORKSPACE_PREINSTALL_LANGUAGES=""
 ARG MISE_VERSION=v2026.6.1
 ARG MISE_RELEASE_BASE_URL=https://github.com/jdx/mise/releases/download
 
-# Proxy support: declared as ARG, exported as ENV (both upper- and lower-case so
-# apt, curl, go, and pip all pick it up). Leave HTTP_PROXY empty in .env to
-# disable. The compose file passes these as build args.
-ARG HTTP_PROXY=
-ARG HTTPS_PROXY=
-ARG NO_PROXY=localhost,127.0.0.1,::1,.local
+# Docker BuildKit provides HTTP_PROXY/HTTPS_PROXY/NO_PROXY as predefined build
+# args for RUN instructions. Do not redeclare or persist them as ENV: they may
+# contain credentials. Compose separately injects proxy values at runtime.
 ARG DEBIAN_MIRROR=deb.debian.org
 ARG DEBIAN_SECURITY_MIRROR=security.debian.org
 
@@ -54,7 +52,8 @@ ENV TZ=${TZ}
 ENV WORKSPACE_USER=${WORKSPACE_USER}
 ENV WORKSPACE_HOME=${WORKSPACE_HOME}
 ENV WORKSPACE_PATH=${WORKSPACE_PATH}
-# Pin $SHELL so any process reading it (mise, oh-my-zsh, IDEs that fall
+ENV HOME=${WORKSPACE_HOME}
+# Pin $SHELL so any process reading it (mise, IDEs that fall
 # back to the env var) sees /bin/zsh. Pairs with useradd -s /bin/zsh above
 # and the host-side VSCode setting terminal.integrated.defaultProfile.linux.
 ENV SHELL=/bin/zsh
@@ -64,13 +63,6 @@ ENV SHELL=/bin/zsh
 # locale without per-tool override.
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
-
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    http_proxy=${HTTP_PROXY} \
-    https_proxy=${HTTPS_PROXY} \
-    no_proxy=${NO_PROXY}
 
 # mise paths (shims will be added to PATH by mise activate)
 ENV MISE_DATA_DIR=${WORKSPACE_HOME}/.local/share/mise
@@ -190,7 +182,7 @@ RUN set -eux; \
     && sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
     && locale-gen \
     && groupadd -g ${PGID} ${WORKSPACE_USER} \
-    && useradd -m -u ${PUID} -g ${PGID} -s /bin/zsh ${WORKSPACE_USER} \
+    && useradd -m -u ${PUID} -g ${PGID} -d ${WORKSPACE_HOME} -s /bin/zsh ${WORKSPACE_USER} \
     && echo "${WORKSPACE_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${WORKSPACE_USER} \
     && chmod 0440 /etc/sudoers.d/${WORKSPACE_USER}
 
@@ -204,11 +196,20 @@ RUN set -eux; \
       arm64) MISE_ARCH="arm64" ;; \
       *) echo "Unsupported TARGETARCH for mise: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    MISE_URL="${MISE_RELEASE_BASE_URL}/${MISE_VERSION}/mise-${MISE_VERSION}-linux-${MISE_ARCH}"; \
+    MISE_ASSET="mise-${MISE_VERSION}-linux-${MISE_ARCH}"; \
+    MISE_URL="${MISE_RELEASE_BASE_URL}/${MISE_VERSION}/${MISE_ASSET}"; \
+    MISE_CHECKSUMS_URL="${MISE_RELEASE_BASE_URL}/${MISE_VERSION}/SHASUMS256.txt"; \
     mkdir -p ${MISE_DATA_DIR} ${MISE_CONFIG_DIR} ${MISE_CACHE_DIR} ${WORKSPACE_PATH}; \
     echo "Downloading mise ${MISE_VERSION} for linux-${MISE_ARCH}"; \
     curl --fail --location --show-error --retry 5 --retry-all-errors --retry-delay 3 \
-      "${MISE_URL}" -o /usr/local/bin/mise; \
+      "${MISE_CHECKSUMS_URL}" -o /tmp/mise-SHASUMS256.txt; \
+    curl --fail --location --show-error --retry 5 --retry-all-errors --retry-delay 3 \
+      "${MISE_URL}" -o "/tmp/${MISE_ASSET}"; \
+    MISE_SHA256="$(awk -v asset="./${MISE_ASSET}" '$2 == asset {print $1; exit}' /tmp/mise-SHASUMS256.txt)"; \
+    [ "${#MISE_SHA256}" -eq 64 ]; \
+    echo "${MISE_SHA256}  /tmp/${MISE_ASSET}" | sha256sum --check --status; \
+    mv "/tmp/${MISE_ASSET}" /usr/local/bin/mise; \
+    rm -f /tmp/mise-SHASUMS256.txt; \
     chmod +x /usr/local/bin/mise; \
     /usr/local/bin/mise --version; \
     chown -R ${WORKSPACE_USER}:${WORKSPACE_USER} ${MISE_DATA_DIR} ${MISE_CONFIG_DIR} ${MISE_CACHE_DIR} ${WORKSPACE_PATH}
@@ -217,52 +218,52 @@ RUN set -eux; \
 # Pre-install languages via mise at build time (optional)
 ###########################################################################
 
-RUN if [ -n "${WORKSPACE_PREINSTALL_LANGUAGES}" ]; then \
-    su - ${WORKSPACE_USER} -c "export PATH=\"/usr/local/bin:\${PATH}\" && mise install ${WORKSPACE_PREINSTALL_LANGUAGES}" \
-    && su - ${WORKSPACE_USER} -c "export PATH=\"/usr/local/bin:\${PATH}\" && mise reshim"; \
+RUN --mount=type=cache,target=${WORKSPACE_HOME}/.cache/mise,uid=${PUID},gid=${PGID} \
+    if [ -n "${WORKSPACE_PREINSTALL_LANGUAGES}" ]; then \
+    echo "[workspace] mise: installing and activating ${WORKSPACE_PREINSTALL_LANGUAGES} globally"; \
+    gosu ${WORKSPACE_USER} mise use --global ${WORKSPACE_PREINSTALL_LANGUAGES}; \
     fi
 
 ###########################################################################
 # homebrew
+# The installer script URL below is pinned to an immutable upstream commit;
+# update it deliberately when refreshing the workspace bootstrap.
 ###########################################################################
 
-RUN if [ "${WORKSPACE_INSTALL_BREW}" = "true" ]; then \
+RUN --mount=type=cache,target=/home/linuxbrew/.cache/Homebrew,uid=${PUID},gid=${PGID} \
+    if [ "${WORKSPACE_INSTALL_BREW}" = "true" ]; then \
     echo "[workspace] Homebrew: preparing directories"; \
     mkdir -p /home/linuxbrew ${HOMEBREW_CACHE} \
     && chown -R ${WORKSPACE_USER}:${WORKSPACE_USER} /home/linuxbrew \
     # Defensive: in some build environments (Docker Desktop on macOS in
-    # particular) /home/${WORKSPACE_USER} ends up not writable by
+    # particular) ${WORKSPACE_HOME} ends up not writable by
     # ${WORKSPACE_USER} after useradd -m, which then breaks any
     # `su - ${WORKSPACE_USER} -c '... ~/.cache/...'` operation. Force the
     # ownership and mode that useradd -m should have produced.
-    && chown -R ${WORKSPACE_USER}:${WORKSPACE_USER} /home/${WORKSPACE_USER} \
-    && chmod 755 /home/${WORKSPACE_USER} \
+    && chown -R ${WORKSPACE_USER}:${WORKSPACE_USER} ${WORKSPACE_HOME} \
+    && chmod 755 ${WORKSPACE_HOME} \
     && echo "[workspace] Homebrew: configuring Git for unstable proxy links" \
-    && su - ${WORKSPACE_USER} -c 'git config --global http.version HTTP/1.1; git config --global http.maxRequests 1; git config --global http.lowSpeedLimit 1; git config --global http.lowSpeedTime 600' \
+    && gosu ${WORKSPACE_USER} git config --global http.version HTTP/1.1 \
+    && gosu ${WORKSPACE_USER} git config --global http.maxRequests 1 \
+    && gosu ${WORKSPACE_USER} git config --global http.lowSpeedLimit 1 \
+    && gosu ${WORKSPACE_USER} git config --global http.lowSpeedTime 600 \
     && echo "[workspace] Homebrew: downloading installer" \
-    && su - ${WORKSPACE_USER} -c 'set -e; curl --fail --location --show-error --retry 5 --retry-all-errors --retry-delay 3 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/homebrew-install.sh; for attempt in 1 2 3; do if NONINTERACTIVE=1 CI=1 /bin/bash /tmp/homebrew-install.sh; then rm -f /tmp/homebrew-install.sh; exit 0; fi; echo "Homebrew installer failed (attempt ${attempt}/3); retrying" >&2; sleep $((attempt * 5)); done; rm -f /tmp/homebrew-install.sh; exit 1' \
+    && gosu ${WORKSPACE_USER} /bin/bash -c 'set -e; curl --fail --location --show-error --retry 5 --retry-all-errors --retry-delay 3 https://raw.githubusercontent.com/Homebrew/install/09c62fc577ec170172b0a184060f141a2c622dc1/install.sh -o /tmp/homebrew-install.sh; for attempt in 1 2 3; do if NONINTERACTIVE=1 CI=1 /bin/bash /tmp/homebrew-install.sh; then rm -f /tmp/homebrew-install.sh; exit 0; fi; echo "Homebrew installer failed (attempt ${attempt}/3); retrying" >&2; sleep $((attempt * 5)); done; rm -f /tmp/homebrew-install.sh; exit 1' \
     && echo "[workspace] Homebrew: updating metadata" \
-    && su - ${WORKSPACE_USER} -c 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && HOMEBREW_VERBOSE=1 brew update' \
+    && gosu ${WORKSPACE_USER} /bin/bash -c 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && HOMEBREW_VERBOSE=1 brew update' \
     && if [ -n "${WORKSPACE_BREW_PACKAGES}" ]; then \
     echo "[workspace] Homebrew: installing ${WORKSPACE_BREW_PACKAGES}"; \
-    su - ${WORKSPACE_USER} -c "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\" && HOMEBREW_VERBOSE=1 brew install --verbose ${WORKSPACE_BREW_PACKAGES}"; \
-    echo "[workspace] Homebrew: packages installed"; \
+    gosu ${WORKSPACE_USER} /bin/bash -c "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\" && HOMEBREW_VERBOSE=1 brew install --verbose ${WORKSPACE_BREW_PACKAGES}" \
+    && echo "[workspace] Homebrew: packages installed"; \
     fi; \
     fi
 
 ###########################################################################
-# zsh + oh-my-zsh configuration
+# Lightweight Zsh configuration (native completion, fzf, optional Starship)
 ###########################################################################
 
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" -- \
-    --unattended --keep-zshrc \
-    && cp -R /root/.oh-my-zsh ${WORKSPACE_HOME}/.oh-my-zsh \
-    && chown -R ${WORKSPACE_USER}:${WORKSPACE_USER} ${WORKSPACE_HOME}/.oh-my-zsh
-
-# Source-controlled zsh config. Edited like any other file — diff lives in
-# git, no need to rebuild the image to tweak. Same content as the previous
-# inline printf; preserved verbatim so `cd` autocompletion, brew shellenv,
-# and detect_stack_on_cd keep working.
+# Keep the default config self-contained. Optional UI tools degrade gracefully
+# when Homebrew is disabled or a user overrides the package list.
 COPY --chown=${WORKSPACE_USER}:${WORKSPACE_USER} --chmod=644 \
     workspaces/dotfiles/.zshrc ${WORKSPACE_HOME}/.zshrc
 

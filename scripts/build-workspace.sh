@@ -6,10 +6,35 @@ set -euo pipefail
 # manifest list with `--load` in the usual Docker Desktop configuration.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -f "${ROOT_DIR}/.env" ]; then
+    # Preserve caller overrides: shell assignments in .env should only provide
+    # defaults, matching Docker Compose's environment-over-.env precedence.
+    override_names=()
+    override_values=()
+    for name in BASE_IMAGE WORKSPACE_USER WORKSPACE_HOME APP_CODE_PATH_CONTAINER \
+        WORKSPACE_INSTALL_BREW WORKSPACE_PREINSTALL_LANGUAGES WORKSPACE_INSTALL_DNSUTILS \
+        WORKSPACE_INSTALL_WORKSPACE_SSH WORKSPACE_BREW_PACKAGES MISE_VERSION MISE_RELEASE_BASE_URL \
+        WORKSPACE_PUID WORKSPACE_PGID TZ HOST_PROXY_URL HTTP_PROXY HTTPS_PROXY NO_PROXY \
+        DEBIAN_MIRROR DEBIAN_SECURITY_MIRROR WORKSPACE_BUILD_NETWORK WORKSPACE_PLATFORMS WORKSPACE_IMAGE; do
+        if printenv "${name}" >/dev/null 2>&1; then
+            override_names+=("${name}")
+            override_values+=("${!name}")
+        fi
+    done
     set -a
     # shellcheck disable=SC1091
     . "${ROOT_DIR}/.env"
     set +a
+    for i in "${!override_names[@]}"; do
+        export "${override_names[$i]}=${override_values[$i]}"
+    done
+    # .env defines HTTP(S)_PROXY in terms of HOST_PROXY_URL. Re-evaluate those
+    # defaults after restoring a caller-provided host URL, unless the caller
+    # explicitly supplied the protocol-specific values too.
+    if [[ " ${override_names[*]} " == *" HOST_PROXY_URL "* ]]; then
+        if [[ " ${override_names[*]} " != *" HTTP_PROXY "* ]]; then HTTP_PROXY="${HOST_PROXY_URL}"; fi
+        if [[ " ${override_names[*]} " != *" HTTPS_PROXY "* ]]; then HTTPS_PROXY="${HOST_PROXY_URL}"; fi
+        export HTTP_PROXY HTTPS_PROXY
+    fi
 fi
 
 PLATFORMS="${PLATFORMS:-${WORKSPACE_PLATFORMS:-}}"

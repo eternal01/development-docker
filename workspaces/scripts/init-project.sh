@@ -22,7 +22,7 @@ if ! cd "$target" 2>/dev/null; then
   exit 1
 fi
 
-if [ -f .mise.toml ] || [ -f .tool-versions ]; then
+if [ -f .mise.toml ] || [ -f mise.toml ] || [ -f .tool-versions ]; then
   printf '\033[33m⚠\033[0m  %s already has mise config — refusing to overwrite.\n' "$(pwd)"
   printf '   Remove the existing file first if you really want to re-init.\n'
   exit 1

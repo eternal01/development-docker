@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare example configuration
+        run: cp .env.example .env
+      - name: Install Zsh syntax checker
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Shell and workspace regression tests
+        run: make test
+      - name: Validate Compose profiles
+        run: >-
+          docker compose
+          --profile db --profile cache --profile mq --profile registry
+          --profile observability --profile storage --profile ci
+          --profile gateway --profile docs
+          config --quiet
+      - name: Build minimal workspace image
+        run: >-
+          docker buildx build --load
+          --file workspaces/workspace.Dockerfile
+          --tag development-docker/workspace:ci
+          --build-arg WORKSPACE_INSTALL_BREW=false
+          --build-arg WORKSPACE_INSTALL_DNSUTILS=false
+          --build-arg WORKSPACE_INSTALL_WORKSPACE_SSH=false
+          .
+      - name: Smoke-test workspace user and mise
+        run: >-
+          docker run --rm
+          --entrypoint /usr/local/bin/workspace-entrypoint
+          development-docker/workspace:ci
+          sh -lc 'test "$(id -un)" = developer && mise --version'

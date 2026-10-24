@@ -18,6 +18,18 @@ networks:
 volumes:
   workspace-mise-cache:
     driver: ${VOLUMES_DRIVER}
+  workspace-gh-config:
+    driver: ${VOLUMES_DRIVER}
+  workspace-shell-state:
+    driver: ${VOLUMES_DRIVER}
+  workspace-ssh:
+    driver: ${VOLUMES_DRIVER}
+  workspace-ssh-host-keys:
+    driver: ${VOLUMES_DRIVER}
+  etcd:
+    driver: ${VOLUMES_DRIVER}
+  grafana:
+    driver: ${VOLUMES_DRIVER}
   workspace-brew-cache:
     driver: ${VOLUMES_DRIVER}
   workspace-cargo-registry:
@@ -45,6 +57,7 @@ services:
 
   ### Workspace #############################################
   workspace:
+    image: ${WORKSPACE_IMAGE:-development-docker/workspace:local}
     build:
       context: .
       dockerfile: workspaces/workspace.Dockerfile
@@ -77,6 +90,12 @@ services:
       # Keep cache persistent, but keep mise installs in the image layer so
       # build-time preinstallation is not hidden by an empty volume.
       - workspace-mise-cache:${WORKSPACE_HOME}/.cache/mise
+      # gh stores credentials here; this named volume persists auth across
+      # container recreation and should be treated as sensitive local data.
+      - workspace-gh-config:${WORKSPACE_HOME}/.config/gh
+      - workspace-shell-state:${WORKSPACE_HOME}/.local/state/shell
+      - workspace-ssh:${WORKSPACE_HOME}/.ssh
+      - workspace-ssh-host-keys:/etc/ssh/host_keys
       # language-specific caches
       - workspace-go-mod:${WORKSPACE_HOME}/go/pkg/mod
       - workspace-cargo-registry:${WORKSPACE_HOME}/.cargo/registry
@@ -104,9 +123,16 @@ services:
     # and SSH sessions to WORKSPACE_USER.
     user: "${WORKSPACE_CONTAINER_USER}"
     ports:
-      - "${WORKSPACE_SSH_PORT}:22"
-      - "${WORKSPACE_SERVE_HOST_PORT}:1080"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${WORKSPACE_SSH_PORT}:22"
+      - "${WORKSPACE_BIND_IP:-127.0.0.1}:${WORKSPACE_SERVE_HOST_PORT}:1080"
     tty: true
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$WORKSPACE_SSH_ENABLED\" != true || pgrep -x sshd >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - frontend
       - backend

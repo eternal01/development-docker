@@ -3,14 +3,39 @@ set -euo pipefail
 
 # Host-side bridge for GUI AI tools and editors. File edits happen on the host
 # bind mount; project commands are always executed in the workspace container.
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CALLER_PWD="$(pwd -P)"
+
+read_project_env() {
+    local key="$1"
+    [ -f "${ROOT_DIR}/.env" ] || return 0
+    awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); gsub(/^[[:space:]\047\"]+|[[:space:]\047\"]+$/, ""); print; exit }' "${ROOT_DIR}/.env"
+}
+
+if [ -z "${WORKSPACE_USER+x}" ]; then WORKSPACE_USER="$(read_project_env WORKSPACE_USER)"; fi
+if [ -z "${APP_CODE_PATH_HOST+x}" ]; then APP_CODE_PATH_HOST="$(read_project_env APP_CODE_PATH_HOST)"; fi
+if [ -z "${APP_CODE_PATH_CONTAINER+x}" ]; then APP_CODE_PATH_CONTAINER="$(read_project_env APP_CODE_PATH_CONTAINER)"; fi
 COMPOSE=(docker compose)
 WORKSPACE_SERVICE="${WORKSPACE_SERVICE:-workspace}"
-HOST_CODES_ROOT="${HOME}/codes"
-CONTAINER_CODES_ROOT="/workspace"
+WORKSPACE_USER="${WORKSPACE_USER:-developer}"
+HOST_CODES_ROOT="${APP_CODE_PATH_HOST:-${HOME}/codes}"
+CONTAINER_CODES_ROOT="${APP_CODE_PATH_CONTAINER:-/workspace}"
+
+# Expand only the path forms supported by Compose .env configuration. Avoid
+# eval: paths are user input and may contain shell metacharacters.
+case "${HOST_CODES_ROOT}" in
+    '~') HOST_CODES_ROOT="${HOME}" ;;
+    '~/'*) HOST_CODES_ROOT="${HOME}/${HOST_CODES_ROOT#\~/}" ;;
+esac
+HOST_CODES_ROOT="${HOST_CODES_ROOT//\$\{HOME\}/${HOME}}"
+HOST_CODES_ROOT="${HOST_CODES_ROOT//\$HOME/${HOME}}"
+if [[ "${HOST_CODES_ROOT}" != /* ]]; then
+    HOST_CODES_ROOT="${ROOT_DIR}/${HOST_CODES_ROOT}"
+fi
 
 container_workdir() {
     local current relative
-    current="$(pwd -P)"
+    current="${CALLER_PWD}"
 
     case "${current}" in
         "${HOST_CODES_ROOT}")
@@ -33,9 +58,10 @@ Usage: ./scripts/dev <command> [args...]
 Commands:
   up                 Start the workspace container
   down               Stop the workspace container
-  shell              Open an interactive zsh shell in the current directory
+  shell              Open an interactive zsh shell in the current project directory
   exec <command>     Run a command in the workspace container
   logs               Follow workspace logs
+  doctor             Check workspace configuration and runtime health
 
 Examples:
   ./scripts/dev up
@@ -48,6 +74,8 @@ EOF
 command="${1:-}"
 shift || true
 
+cd "${ROOT_DIR}"
+
 case "${command}" in
     up)
         "${COMPOSE[@]}" up -d "${WORKSPACE_SERVICE}"
@@ -56,16 +84,28 @@ case "${command}" in
         "${COMPOSE[@]}" stop "${WORKSPACE_SERVICE}"
         ;;
     shell)
-        "${COMPOSE[@]}" exec -u developer "${WORKSPACE_SERVICE}" zsh
+        "${COMPOSE[@]}" exec -u "${WORKSPACE_USER}" -w "$(container_workdir)" "${WORKSPACE_SERVICE}" zsh -l
         ;;
     exec)
         [ "$#" -gt 0 ] || { usage >&2; exit 2; }
-        command_string="$*"
-        "${COMPOSE[@]}" exec -u developer -T -w "$(container_workdir)" "${WORKSPACE_SERVICE}" \
-            bash -lc "eval '\$(/usr/local/bin/mise activate bash)' && ${command_string}"
+        "${COMPOSE[@]}" exec -u "${WORKSPACE_USER}" -T -w "$(container_workdir)" "${WORKSPACE_SERVICE}" \
+            mise exec -- "$@"
         ;;
     logs)
         "${COMPOSE[@]}" logs -f "${WORKSPACE_SERVICE}"
+        ;;
+    doctor)
+        command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+        docker compose version >/dev/null 2>&1 || { echo "Docker Compose v2 is required" >&2; exit 1; }
+        docker compose config --quiet || exit 1
+        if [ ! -d "${HOST_CODES_ROOT}" ]; then
+            echo "Host code directory does not exist: ${HOST_CODES_ROOT}" >&2
+            exit 1
+        fi
+        [ -w "${HOST_CODES_ROOT}" ] || { echo "Host code directory is not writable: ${HOST_CODES_ROOT}" >&2; exit 1; }
+        docker compose exec -T -u "${WORKSPACE_USER}" "${WORKSPACE_SERVICE}" sh -lc \
+            'id; printf "workspace=%s\\n" "$PWD"; command -v mise; mise --version; test -w "$PWD"' || exit 1
+        echo "Workspace configuration and runtime checks passed."
         ;;
     help|--help|-h|'')
         usage

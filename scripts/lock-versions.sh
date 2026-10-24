@@ -45,6 +45,7 @@ CONFIG_JSON=$(COMPOSE_PROFILES="$ALL_PROFILES" docker compose config --format js
     | .key as $service
     | .value.build.args
     | to_entries[]
+    | select(.key | ascii_upcase | IN("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY") | not)
     | "\($service).\(.key)=\(.value)"
   '
 } > "$LOCK_FILE"
